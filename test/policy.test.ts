@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -117,4 +117,36 @@ test("canonicalizes symlinks and nonexistent descendants", () => {
     canonicalizePath(join(link, "new", "file")),
     join(canonicalizePath(real), "new", "file"),
   );
+});
+
+test("resolves relative paths against an explicit base, not the process cwd", () => {
+  const processCwd = mkdtempSync(join(tmpdir(), "pi-sandbox-process-cwd-"));
+  const sessionCwd = mkdtempSync(join(tmpdir(), "pi-sandbox-session-cwd-"));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(processCwd);
+
+    // Without a base, relative paths still resolve against the process cwd.
+    assert.equal(canonicalizePath("."), canonicalizePath(processCwd));
+
+    // With an explicit base (the session cwd), "." resolves to the session
+    // directory even though the process cwd points elsewhere.
+    assert.equal(canonicalizePath(".", sessionCwd), canonicalizePath(sessionCwd));
+    assert.equal(
+      canonicalizePath("sub/file.txt", sessionCwd),
+      join(canonicalizePath(sessionCwd), "sub", "file.txt"),
+    );
+
+    // "~" and absolute paths are unaffected by the base.
+    assert.equal(canonicalizePath("~/x", sessionCwd), canonicalizePath("~/x"));
+    assert.equal(canonicalizePath("/etc/hosts", sessionCwd), canonicalizePath("/etc/hosts"));
+
+    // Pattern matching honors the base for relative patterns.
+    assert.equal(matchesPattern(join(sessionCwd, "file.txt"), [".env", "."], sessionCwd), true);
+    assert.equal(matchesPattern(join(processCwd, "file.txt"), [".env", "."], sessionCwd), false);
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(processCwd, { recursive: true, force: true });
+    rmSync(sessionCwd, { recursive: true, force: true });
+  }
 });
