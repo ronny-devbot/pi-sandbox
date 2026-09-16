@@ -290,7 +290,22 @@ export async function showPermissionPrompt(
     };
   });
 
-  return result ?? { action: "abort", value: originalValue };
+  if (result !== undefined) return result;
+
+  // Headless hosts (e.g. PI WEB) do not render the TUI component above: their
+  // `custom` delegates to the no-op default and resolves to `undefined`
+  // immediately without showing anything. Fall back to `select`, which PI WEB
+  // bridges to a real browser dialog (a terminal TUI renders it natively too).
+  // Value editing is not available in this fallback, so the original value is
+  // always returned; a dismissed/timeout dialog resolves `undefined` = abort.
+  const labels = options.map((option) => option.label);
+  const chosen = await ctx.ui.select(title, labels, {
+    ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+  });
+  const index = chosen === undefined ? -1 : labels.indexOf(chosen);
+  if (index === -1) return { action: "abort", value: originalValue };
+  const option = options[index]!;
+  return { action: option.action, value: originalValue };
 }
 
 const validRule = (value: string, matches: boolean, target: string): string | null => {
