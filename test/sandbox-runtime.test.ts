@@ -8,7 +8,7 @@ import { SandboxManager } from "@carderne/sandbox-runtime";
 import assert from "node:assert/strict";
 
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { canonicalizePath } from "../src/policy.ts";
+import { canonicalizePath, expandPath } from "../src/policy.ts";
 import {
   buildRuntimeConfig,
   createSandboxedBashOps,
@@ -84,7 +84,7 @@ test("buildRuntimeConfig adds session allowances without mutating config", () =>
   assert.equal(DEFAULT_CONFIG.network?.allowedDomains?.includes("example.com"), false);
 });
 
-test("buildRuntimeConfig canonicalizes non-glob filesystem paths", () => {
+test("buildRuntimeConfig anchors relative filesystem patterns to the process cwd by default", () => {
   const runtime = buildRuntimeConfig({
     ...DEFAULT_CONFIG,
     filesystem: {
@@ -99,7 +99,54 @@ test("buildRuntimeConfig canonicalizes non-glob filesystem paths", () => {
   assert.deepEqual(runtime.filesystem?.denyRead, [canonicalizePath("/tmp")]);
   assert.equal(runtime.filesystem?.allowRead?.includes(canonicalizePath("/tmp")), true);
   assert.deepEqual(runtime.filesystem?.allowWrite, [canonicalizePath("/tmp")]);
-  assert.deepEqual(runtime.filesystem?.denyWrite, ["*.key"]);
+  assert.deepEqual(runtime.filesystem?.denyWrite, [expandPath("*.key")]);
+});
+
+test("buildRuntimeConfig anchors relative filesystem patterns to the session cwd", () => {
+  const sessionCwd = mkdtempSync(join(tmpdir(), "pi-sandbox-session-cwd-"));
+  const processCwd = mkdtempSync(join(tmpdir(), "pi-sandbox-process-cwd-"));
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(processCwd);
+
+    const config = {
+      ...DEFAULT_CONFIG,
+      filesystem: {
+        ...DEFAULT_CONFIG.filesystem!,
+        denyRead: ["/etc"],
+        allowRead: [],
+        allowWrite: [".", "/tmp"],
+        denyWrite: [".env", "secrets/*.key"],
+      },
+    };
+
+    // An explicit session cwd wins over the process cwd, for both plain and
+    // relative glob patterns. "~"/absolute entries are unaffected.
+    const runtime = buildRuntimeConfig(config, undefined, "linux", sessionCwd);
+    assert.deepEqual(runtime.filesystem?.allowWrite, [
+      canonicalizePath(sessionCwd),
+      canonicalizePath("/tmp"),
+    ]);
+    assert.deepEqual(runtime.filesystem?.denyWrite, [
+      join(canonicalizePath(sessionCwd), ".env"),
+      join(canonicalizePath(sessionCwd), "secrets", "*.key"),
+    ]);
+
+    // Without an explicit cwd, patterns still anchor on the process cwd.
+    const legacy = buildRuntimeConfig(config, undefined, "linux");
+    assert.deepEqual(legacy.filesystem?.allowWrite, [
+      canonicalizePath(processCwd),
+      canonicalizePath("/tmp"),
+    ]);
+    assert.deepEqual(legacy.filesystem?.denyWrite, [
+      join(canonicalizePath(processCwd), ".env"),
+      join(canonicalizePath(processCwd), "secrets", "*.key"),
+    ]);
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(sessionCwd, { recursive: true, force: true });
+    rmSync(processCwd, { recursive: true, force: true });
+  }
 });
 
 test("buildRuntimeConfig exposes the bundled seccomp helper on Linux", () => {

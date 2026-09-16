@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { type BashOperations, getShellConfig } from "@earendil-works/pi-coding-agent";
 
 import { type SandboxConfig } from "./config.ts";
-import { canonicalizePath } from "./policy.ts";
+import { canonicalizePath, expandPath } from "./policy.ts";
 
 export interface SessionAllowances {
   domains: string[];
@@ -25,11 +25,11 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-const canonicalizeFilesystemPattern = (path: string) =>
-  path.includes("*") ? path : canonicalizePath(path);
+const canonicalizeFilesystemPattern = (path: string, base: string = process.cwd()) =>
+  path.includes("*") ? expandPath(path, base) : canonicalizePath(path, base);
 
-const canonicalizeFilesystemPatterns = (paths: string[]) =>
-  unique(paths.map(canonicalizeFilesystemPattern));
+const canonicalizeFilesystemPatterns = (paths: string[], base: string = process.cwd()) =>
+  unique(paths.map((path) => canonicalizeFilesystemPattern(path, base)));
 
 function sandboxRuntimeReadPaths(platform: NodeJS.Platform): string[] {
   if (platform !== "linux") return [];
@@ -60,10 +60,20 @@ export function resolveAllowances(
   };
 }
 
+/**
+ * Build the sandbox runtime config.
+ *
+ * `cwd` is the session working directory that relative filesystem patterns
+ * resolve against. It must not default to the daemon's process cwd: in
+ * headless hosts (e.g. systemd user units without `WorkingDirectory=`) that
+ * cwd is the user's home, so a bare `"."` would otherwise rebind the whole
+ * home directory read-write.
+ */
 export function buildRuntimeConfig(
   config: SandboxConfig,
   allowances?: SessionAllowances,
   platform: NodeJS.Platform = process.platform,
+  cwd: string = process.cwd(),
 ): SandboxRuntimeConfig {
   const effective = resolveAllowances(config, allowances);
 
@@ -75,13 +85,13 @@ export function buildRuntimeConfig(
     },
     filesystem: {
       disabled: config.filesystem?.disabled,
-      denyRead: canonicalizeFilesystemPatterns(config.filesystem?.denyRead ?? []),
-      allowRead: canonicalizeFilesystemPatterns([
-        ...effective.readPaths,
-        ...sandboxRuntimeReadPaths(platform),
-      ]),
-      allowWrite: canonicalizeFilesystemPatterns(effective.writePaths),
-      denyWrite: canonicalizeFilesystemPatterns(config.filesystem?.denyWrite ?? []),
+      denyRead: canonicalizeFilesystemPatterns(config.filesystem?.denyRead ?? [], cwd),
+      allowRead: canonicalizeFilesystemPatterns(
+        [...effective.readPaths, ...sandboxRuntimeReadPaths(platform)],
+        cwd,
+      ),
+      allowWrite: canonicalizeFilesystemPatterns(effective.writePaths, cwd),
+      denyWrite: canonicalizeFilesystemPatterns(config.filesystem?.denyWrite ?? [], cwd),
     },
     ignoreViolations: config.ignoreViolations,
     enableWeakerNestedSandbox: config.enableWeakerNestedSandbox,
@@ -95,8 +105,9 @@ export async function initializeSandbox(
   manager: ISandboxManager,
   config: SandboxConfig,
   allowances?: SessionAllowances,
+  cwd: string = process.cwd(),
 ): Promise<void> {
-  const runtimeConfig = buildRuntimeConfig(config, allowances);
+  const runtimeConfig = buildRuntimeConfig(config, allowances, process.platform, cwd);
   // The runtime checks its live allowlist. Permission prompts happen before
   // execution; a callback capturing this initial list could re-allow removed domains.
   await manager.initialize(runtimeConfig);
@@ -106,10 +117,11 @@ export function updateSandboxConfig(
   manager: ISandboxManager,
   config: SandboxConfig,
   allowances: SessionAllowances,
+  cwd: string = process.cwd(),
 ): void {
   // Permission updates must not tear down the proxy used by concurrent commands.
   // Network rules apply immediately; new commands pick up filesystem rules when wrapped.
-  manager.updateConfig(buildRuntimeConfig(config, allowances));
+  manager.updateConfig(buildRuntimeConfig(config, allowances, process.platform, cwd));
 }
 
 export function supportsNodeEnvProxy(version: string): boolean {
