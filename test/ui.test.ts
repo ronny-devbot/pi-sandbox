@@ -61,6 +61,7 @@ test(
     const ctx = {
       cwd: "/workspace",
       hasUI: true,
+      mode: "tui",
       ui: {
         custom: <T>(factory: PromptFactory<T>): Promise<T> =>
           new Promise<T>((resolve) => {
@@ -93,3 +94,38 @@ test(
     assert.deepEqual(result, { action: "abort", value: "example.test" });
   },
 );
+
+test("showPermissionPrompt skips the custom probe on headless hosts", async () => {
+  let customCalls = 0;
+  let selectTitle: string | undefined;
+  const pi = {
+    events: { emit: () => undefined },
+  } as unknown as ExtensionAPI;
+  const ctx = {
+    cwd: "/workspace",
+    hasUI: true,
+    mode: "rpc",
+    ui: {
+      custom: <T>(): Promise<T> => {
+        customCalls++;
+        return Promise.resolve(undefined as unknown as T);
+      },
+      select: (title: string, options: string[]): Promise<string | undefined> => {
+        selectTitle = title;
+        return Promise.resolve(options[0]);
+      },
+    },
+  } as unknown as ExtensionContext;
+
+  const result = await showPermissionPrompt(
+    pi,
+    ctx,
+    'Write blocked: "/opt/txxx" is not in allowWrite',
+    "/opt/txxx",
+    () => null,
+  );
+
+  assert.equal(customCalls, 0, "headless host must not call ui.custom");
+  assert.equal(selectTitle, 'Write blocked: "/opt/txxx" is not in allowWrite');
+  assert.equal(result.value, "/opt/txxx");
+});

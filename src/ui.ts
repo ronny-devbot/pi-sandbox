@@ -79,7 +79,12 @@ export async function showPermissionPrompt(
 
   const timeoutMs = permissionPromptTimeoutMs(timeoutSeconds);
   const options = permissionOptions(ctx.cwd);
-  const result = await ctx.ui.custom<PermissionPromptResult>((tui, theme, _kb, done) => {
+  // Only terminal TUIs render the custom component. Headless hosts (pi-web
+  // runs mode "rpc") treat `custom` as a no-op resolving `undefined` instantly;
+  // calling it there would fire a spurious `ui_prompt_start` ahead of the
+  // `select` fallback, so skip the probe entirely.
+  const result = ctx.mode === "tui"
+    ? await ctx.ui.custom<PermissionPromptResult>((tui, theme, _kb, done) => {
     const input = new Input();
     let selectedIndex = 0;
     let pendingAction: PermissionChoice | null = null;
@@ -288,16 +293,16 @@ export async function showPermissionPrompt(
         clearPromptTimers();
       },
     };
-  });
+    })
+    : undefined;
 
   if (result !== undefined) return result;
 
-  // Headless hosts (e.g. PI WEB) do not render the TUI component above: their
-  // `custom` delegates to the no-op default and resolves to `undefined`
-  // immediately without showing anything. Fall back to `select`, which PI WEB
-  // bridges to a real browser dialog (a terminal TUI renders it natively too).
-  // Value editing is not available in this fallback, so the original value is
-  // always returned; a dismissed/timeout dialog resolves `undefined` = abort.
+  // Headless hosts (pi-web runs mode "rpc") skip the `custom` probe above and
+  // come straight here: `select` bridges to a real browser dialog there (a
+  // terminal TUI renders it natively too). Value editing is not available in
+  // this fallback, so the original value is always returned; a dismissed or
+  // timed-out dialog resolves `undefined` = abort.
   const labels = options.map((option) => option.label);
   const chosen = await ctx.ui.select(title, labels, {
     ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
